@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "open_spiel/abseil-cpp/absl/strings/str_cat.h"
+#include "open_spiel/abseil-cpp/absl/types/span.h"
 #include "open_spiel/game_parameters.h"
 #include "open_spiel/observer.h"
 #include "open_spiel/spiel.h"
@@ -48,6 +49,8 @@ const GameType kGameType{/*short_name=*/"hex",
                              {"board_size", GameParameter(kDefaultBoardSize)},
                              {"num_cols", GameParameter(kDefaultBoardSize)},
                              {"num_rows", GameParameter(kDefaultBoardSize)},
+                             {"plain_obs_tensor",
+                              GameParameter(kDefaultPlainObsTensor)},
                              {"string_rep", GameParameter(kDefaultStringRep)},
                              {"swap", GameParameter(kDefaultSwap)},
                          }};
@@ -70,6 +73,24 @@ StringRep StringRepStrToEnum(const std::string& string_rep) {
   }
 }
 
+Player CellStateToPlainPlane(CellState state) {
+  switch (state) {
+    case CellState::kEmpty:
+      return 2;
+    case CellState::kWhite:
+    case CellState::kWhiteWin:
+    case CellState::kWhiteWest:
+    case CellState::kWhiteEast:
+      return kWhitePlayerId;
+    case CellState::kBlack:
+    case CellState::kBlackWin:
+    case CellState::kBlackNorth:
+    case CellState::kBlackSouth:
+      return kBlackPlayerId;
+    default:
+      SpielFatalError("Unknown state.");
+  }
+}
 }  // namespace
 
 CellState PlayerToState(Player player) {
@@ -357,14 +378,22 @@ std::string HexState::ObservationString(Player player) const {
 
 void HexState::ObservationTensor(Player player,
                                  absl::Span<float> values) const {
-  // TODO(author8): Make an option to not expose connection info
-  SPIEL_CHECK_GE(player, 0);
-  SPIEL_CHECK_LT(player, num_players_);
+  const HexGame* parent_game = down_cast<const HexGame*>(game_.get());
+  if (parent_game->plain_obs_tensor()) {
+    TensorView<3> view(values, {3, num_cols_, num_rows_}, true);
+    for (int cell = 0; cell < board_.size(); ++cell) {
+      int state_index = CellStateToPlainPlane(board_[cell]);
+      view[{state_index, cell / num_cols_, cell % num_cols_}] = 1.0;
+    }
+  } else {
+    SPIEL_CHECK_GE(player, 0);
+    SPIEL_CHECK_LT(player, num_players_);
 
-  TensorView<2> view(values, {kCellStates, static_cast<int>(board_.size())},
-                     true);
-  for (int cell = 0; cell < board_.size(); ++cell) {
-    view[{static_cast<int>(board_[cell]) - kMinValueCellState, cell}] = 1.0;
+    TensorView<2> view(values, {kCellStates, static_cast<int>(board_.size())},
+                      true);
+    for (int cell = 0; cell < board_.size(); ++cell) {
+      view[{static_cast<int>(board_[cell]) - kMinValueCellState, cell}] = 1.0;
+    }
   }
 }
 
@@ -381,7 +410,17 @@ HexGame::HexGame(const GameParameters& params)
           ParameterValue<int>("num_rows", ParameterValue<int>("board_size"))),
       string_rep_(StringRepStrToEnum(
           ParameterValue<std::string>("string_rep", kDefaultStringRep))),
-      swap_(ParameterValue<bool>("swap")) {}
+      swap_(ParameterValue<bool>("swap")),
+      plain_obs_tensor_(ParameterValue<bool>("plain_obs_tensor")) {}
+
+std::vector<int> HexGame::ObservationTensorShape() const {
+  if (plain_obs_tensor_) {
+    // empty, black, white
+    return {3, num_cols_, num_rows_};
+  } else {
+    return {kCellStates, num_cols_, num_rows_};
+  }
+}
 
 }  // namespace hex
 }  // namespace open_spiel
